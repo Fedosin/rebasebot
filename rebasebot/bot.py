@@ -52,7 +52,7 @@ def _message_slack(webhook_url, msg):
     requests.post(webhook_url, json={"text": msg})
 
 
-def _commit_go_mod_updates(gitwd, source):
+def _commit_go_mod_updates(gitwd, source, amend=False):
     logging.info("Performing go modules update")
 
     try:
@@ -80,10 +80,13 @@ def _commit_go_mod_updates(gitwd, source):
     if gitwd.is_dirty():
         try:
             gitwd.git.add(all=True)
-            gitwd.git.commit(
-                "-m", "UPSTREAM: <carry>: Updating and vendoring go modules "
-                "after an upstream rebase"
-            )
+            if amend:
+                gitwd.git.commit("--amend", "--no-edit")
+            else:
+                gitwd.git.commit(
+                    "-m", "UPSTREAM: <carry>: Updating and vendoring go modules "
+                    "after an upstream rebase"
+                )
         except Exception as err:
             err.extra_info = "Unable to commit go module changes in git"
             raise err
@@ -497,19 +500,25 @@ def run(
         return False
 
     try:
-        needs_rebase = _needs_rebase(gitwd, source, dest)
-        if needs_rebase:
+        if _needs_rebase(gitwd, source, dest):
             _do_rebase(gitwd, source, dest, source_repo, tag_policy)
 
             if update_go_modules:
                 _commit_go_mod_updates(gitwd, source)
 
-        # To prevent potential github conflicts we need to check if
-        # "git merge --no-ff" returns no errors. If it's not true, we
-        # have to create a merge commit.
-        needs_merge = _needs_merge(gitwd, dest)
-        if needs_merge:
-            _do_merge(gitwd, dest)
+            # To prevent potential github conflicts we need to check if
+            # "git merge --no-ff" returns no errors. If it's not true, we
+            # have to create a merge commit.
+            if _needs_merge(gitwd, dest):
+                proc = subprocess.run(
+                    "rm -rf vendor", shell=True, check=True, capture_output=True
+                )
+                logging.debug("rm -rf vendor output: %s", proc.stdout.decode())
+
+                _do_merge(gitwd, dest)
+
+                if update_go_modules:
+                    _commit_go_mod_updates(gitwd, source, amend=True)
 
     except RepoException as ex:
         logging.error(ex)
